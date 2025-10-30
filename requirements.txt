@@ -1,0 +1,7 @@
+# This file lists the dependencies for the project.
+# It can be used to install all required packages with: pip install -r requirements.txt
+
+numpy
+matplotlib
+pyserial
+nidaqmx
