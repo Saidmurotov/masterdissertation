@@ -1,0 +1,29 @@
+// Generated main.c for tiny-rtos
+// Task: {{ model.task_name }}
+// Sample Rate: {{ model.sample_rate }} Hz
+// Channels: {{ model.channels }}
+// Priority: {{ model.rtos_task_priority }}
+// Stack Size: {{ model.rtos_stack_size }} words
+
+#include "FreeRTOS.h"
+#include "task.h"
+#include "hal_adc.h" // Custom HAL for ADC
+
+void {{ model.task_name }}(void *pvParameters)
+{
+    // Task implementation based on model
+    for(;;)
+    {
+        // Read ADC channels
+        // ...
+        vTaskDelay(pdMS_TO_TICKS(1000 / {{ model.sample_rate }}));
+    }
+}
+
+void main(void)
+{
+    // System init
+    // ...
+    xTaskCreate({{ model.task_name }}, "{{ model.task_name }}", {{ model.rtos_stack_size }}, NULL, {{ model.rtos_task_priority }}, NULL);
+    vTaskStartScheduler();
+}
