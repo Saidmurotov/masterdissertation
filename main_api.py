@@ -95,3 +95,83 @@ async def websocket_data(ws: WebSocket):
         await ws.send_text(json.dumps(payload))
         await asyncio.sleep(2)
 
+
+# --- Universal IDE Endpoints ---
+
+from pio_manager import PlatformIOManager
+from daq_config import BOARD_CATALOG, SENSOR_CATALOG
+
+pio_manager = PlatformIOManager()
+
+@app.get("/boards")
+def list_boards():
+    """Returns the universal board catalog."""
+    return BOARD_CATALOG
+
+@app.get("/ports")
+def list_ports():
+    """Lists available COM ports."""
+    return pio_manager.list_ports()
+
+@app.get("/drivers")
+def list_drivers():
+    """Returns list of supported drivers."""
+    # This could be dynamic, but fixed list is fine for now
+    return ["CH340", "CP210x", "Arduino"]
+
+class DriverInstallRequest(BaseModel):
+    driver: str
+
+@app.post("/install-driver")
+def install_driver(req: DriverInstallRequest):
+    """Launches driver installer."""
+    success, msg = pio_manager.install_driver(req.driver)
+    if not success:
+        raise HTTPException(status_code=500, detail=msg)
+    return {"message": msg}
+
+@app.websocket("/ws/flash")
+async def websocket_flash(ws: WebSocket):
+    await ws.accept()
+    try:
+        data = await ws.receive_json()
+        code = data.get("code")
+        board_name = data.get("board")
+        port = data.get("port")
+        sensor_types = data.get("sensors", []) # List of strings e.g. ["DHT22"]
+
+        if not code or not board_name or not port:
+            await ws.send_json({"type": "error", "message": "Missing code, board, or port"})
+            return
+
+        board_config = BOARD_CATALOG.get(board_name)
+        if not board_config:
+            await ws.send_json({"type": "error", "message": f"Unknown board: {board_name}"})
+            return
+
+        # Resolve strict library dependencies from SENSOR_CATALOG
+        # We need the folder names that PIO will look for in vendor/libraries.
+        # daq_config.py's SENSOR_CATALOG['lib_deps'] has strings like "adafruit/DHT sensor library"
+        # Since we installed them using those names, PIO usually stores them as "DHT sensor library" (basename)
+        # or we can rely on how PIO resolves deps.
+        # But for offline mode with `lib_extra_dirs`, we must specific the folder name if it differs,
+        # OR just list the deps and let PIO find them in the extra dir.
+        libs = []
+        for s_type in sensor_types:
+            s_meta = SENSOR_CATALOG.get(s_type)
+            if s_meta and "lib_deps" in s_meta:
+                 libs.extend(s_meta["lib_deps"])
+        
+        # Deduplicate
+        libs = list(set(libs))
+
+        async def send_log(msg):
+            await ws.send_json(msg)
+
+        await pio_manager.build_and_upload(code, board_config, port, libs, send_log)
+
+    except Exception as e:
+        await ws.send_json({"type": "error", "message": str(e)})
+    finally:
+        await ws.close()
+

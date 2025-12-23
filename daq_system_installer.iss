@@ -44,6 +44,11 @@ Source: "dist\backend_server.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; Template Files
 Source: "templates\*"; DestDir: "{app}\templates"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+; Offline Core & Libraries
+Source: "portable_pio\*"; DestDir: "{app}\portable_pio"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "vendor\*"; DestDir: "{app}\vendor"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "resources\drivers\*"; DestDir: "{app}\resources\drivers"; Flags: ignoreversion recursesubdirs createallsubdirs
+
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]

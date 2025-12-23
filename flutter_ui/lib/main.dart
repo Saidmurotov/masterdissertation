@@ -108,19 +108,30 @@ class SensorSelectionPage extends StatefulWidget {
 }
 
 class _SensorSelectionPageState extends State<SensorSelectionPage> {
+  // Data State
   List<Map<String, dynamic>> availableSensors = [];
+  Map<String, dynamic> boardCatalog = {};
+  List<String> get boardNames => boardCatalog.keys.toList();
+
+  // Selection State
   final Map<String, bool> selected = {};
   final Map<String, TextEditingController> pinControllers = {};
-  final List<String> boards = const ["ESP32", "ESP8266", "Arduino Uno"];
-  String selectedBoard = "ESP32";
+  String? selectedBoard;
+
+  // Port State
+  List<String> availablePorts = [];
+  String? selectedPort;
+
+  // UI/Process State
   bool isLoading = false;
   bool sensorsLoading = true;
+  bool isUploading = false;
   String? generatedCode;
   List<String> semanticErrors = [];
-  WebSocketChannel? channel;
   bool semanticAndHardwareValid = false;
 
-  // Live data buffers
+  // Live Data State
+  WebSocketChannel? dataChannel;
   final List<FlSpot> tempSeries = [];
   final List<FlSpot> humSeries = [];
   final List<FlSpot> pressureSeries = [];
@@ -129,11 +140,17 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
   double tick = 0;
   static const int maxPoints = 50;
 
+  // Console State
+  final ScrollController consoleScroll = ScrollController();
+  final List<LogEntry> consoleLogs = [];
+
   @override
   void initState() {
     super.initState();
     _loadSensors();
-    _connectStream();
+    _fetchBoards();
+    _fetchPorts();
+    _connectDataStream();
   }
 
   @override
@@ -141,26 +158,94 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
     for (final c in pinControllers.values) {
       c.dispose();
     }
-    channel?.sink.close();
+    dataChannel?.sink.close();
+    consoleScroll.dispose();
     super.dispose();
   }
 
-  void _connectStream() {
-    channel =
+  void _log(String msg, String category) {
+    if (!mounted) return;
+    setState(() {
+      consoleLogs.add(LogEntry(
+        message: msg,
+        category: category,
+        timestamp: DateTime.now(),
+      ));
+    });
+  }
+
+  // --- API Calls ---
+
+  Future<void> _fetchBoards() async {
+    try {
+      final resp = await http.get(Uri.parse("http://127.0.0.1:8000/boards"));
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body) as Map<String, dynamic>;
+        setState(() {
+          boardCatalog = data;
+          if (boardNames.isNotEmpty && selectedBoard == null) {
+            selectedBoard = "ESP32"; // Default fallback
+            if (!boardNames.contains(selectedBoard)) {
+              selectedBoard = boardNames.first;
+            }
+          }
+        });
+      }
+    } catch (e) {
+      _showSnack("Failed to load boards: $e");
+    }
+  }
+
+  Future<void> _fetchPorts() async {
+    try {
+      final resp = await http.get(Uri.parse("http://127.0.0.1:8000/ports"));
+      if (resp.statusCode == 200) {
+        final List<dynamic> data = jsonDecode(resp.body);
+        setState(() {
+          availablePorts = data.cast<String>();
+          if (availablePorts.isNotEmpty && selectedPort == null) {
+            selectedPort = availablePorts.first;
+          }
+        });
+      }
+    } catch (e) {
+      _log("Failed to scan ports: $e", "error");
+    }
+  }
+
+  Future<void> _installDriver(String driverName) async {
+    _log("Launching installer for $driverName...", "log");
+    try {
+      final resp = await http.post(
+        Uri.parse("http://127.0.0.1:8000/install-driver"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({"driver": driverName}),
+      );
+      if (resp.statusCode == 200) {
+        _log("Installer launched manually. Please follow setup.", "success");
+      } else {
+        _log("Failed: ${resp.body}", "error");
+      }
+    } catch (e) {
+      _log("Driver install error: $e", "error");
+    }
+  }
+
+  void _connectDataStream() {
+    dataChannel =
         WebSocketChannel.connect(Uri.parse("ws://127.0.0.1:8000/ws/data"));
-    channel!.stream.listen((event) {
+    dataChannel!.stream.listen((event) {
       try {
         final data = jsonDecode(event);
         _ingestData(data);
-      } catch (_) {
-        // ignore parse errors
-      }
+      } catch (_) {}
     }, onError: (e) {
-      _showSnack("Stream error: $e");
+      // _showSnack("Stream error: $e");
     });
   }
 
   void _ingestData(Map<String, dynamic> data) {
+    if (!mounted) return;
     setState(() {
       tick += 1;
       void addPoint(List<FlSpot> series, num? v) {
@@ -177,6 +262,63 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
       addPoint(gasSeries, data["gas"]);
       addPoint(lightSeries, data["light"]);
     });
+  }
+
+  // --- Actions ---
+
+  Future<void> _uploadCode() async {
+    if (generatedCode == null) {
+      _showSnack("Generate code first!");
+      return;
+    }
+    if (selectedPort == null) {
+      _showSnack("Select a COM port first!");
+      return;
+    }
+
+    setState(() {
+      isUploading = true;
+      consoleLogs.clear();
+    });
+    _log("Initializing Upload to $selectedBoard on $selectedPort...", "log");
+
+    final sensorTypes =
+        selected.entries.where((e) => e.value).map((e) => e.key).toList();
+
+    try {
+      final ws =
+          WebSocketChannel.connect(Uri.parse("ws://127.0.0.1:8000/ws/flash"));
+
+      // Send config
+      ws.sink.add(jsonEncode({
+        "code": generatedCode,
+        "board": selectedBoard,
+        "port": selectedPort,
+        "sensors": sensorTypes
+      }));
+
+      ws.stream.listen((event) {
+        final data = jsonDecode(event);
+        final type = data["type"];
+        final msg = data["message"] ?? "";
+        String cat = data["category"] ?? (type == "error" ? "error" : "log");
+
+        _log(msg, cat);
+
+        if (type == "success") {
+          _showSnack("Upload Successful!");
+        }
+      }, onDone: () {
+        setState(() => isUploading = false);
+        _log("Connection closed.", "log");
+      }, onError: (e) {
+        _log("WebSocket Error: $e", "error");
+        setState(() => isUploading = false);
+      });
+    } catch (e) {
+      _log("Failed to connect WS: $e", "error");
+      setState(() => isUploading = false);
+    }
   }
 
   Future<void> _loadSensors() async {
@@ -363,7 +505,18 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text(Branding.appTitle)),
+      appBar: AppBar(
+        title: const Text(Branding.appTitle),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () {
+              _fetchPorts();
+            },
+            tooltip: "Refresh Ports",
+          )
+        ],
+      ),
       drawer: Drawer(
         child: ListView(
           padding: EdgeInsets.zero,
@@ -377,6 +530,35 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
                     style: TextStyle(fontSize: 24, color: Colors.blueGrey)),
               ),
               decoration: BoxDecoration(color: Colors.blueGrey),
+            ),
+            ExpansionTile(
+              title: const Text("Advanced Tools"),
+              leading: const Icon(Icons.build),
+              children: [
+                ListTile(
+                  title: const Text("Install USB Drivers"),
+                  leading: const Icon(Icons.usb),
+                  onTap: () {
+                    showDialog(
+                        context: context,
+                        builder: (ctx) => SimpleDialog(
+                              title: const Text("Select Driver to Install"),
+                              children: [
+                                SimpleDialogOption(
+                                    child: const Text("CH340 (Chinese Clones)"),
+                                    onPressed: () => _installDriver("CH340")),
+                                SimpleDialogOption(
+                                    child:
+                                        const Text("CP210x (NodeMCU/DevKit)"),
+                                    onPressed: () => _installDriver("CP210x")),
+                                SimpleDialogOption(
+                                    child: const Text("Arduino Original"),
+                                    onPressed: () => _installDriver("Arduino")),
+                              ],
+                            ));
+                  },
+                )
+              ],
             ),
             ListTile(
               title: const Text("About Dissertation"),
@@ -425,162 +607,152 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Header Row
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text(
-                        "DAQ Control & Monitoring",
-                        style: TextStyle(
-                            fontSize: 20, fontWeight: FontWeight.bold),
+                      DropdownButton<String>(
+                        value: selectedBoard,
+                        hint: const Text("Select Board"),
+                        items: boardNames
+                            .map((b) =>
+                                DropdownMenuItem(value: b, child: Text(b)))
+                            .toList(),
+                        onChanged: (val) {
+                          if (val != null) setState(() => selectedBoard = val);
+                        },
                       ),
-                      IconButton(
-                        tooltip: "Toggle theme",
-                        onPressed: widget.onToggleTheme,
-                        icon: Icon(widget.mode == ThemeMode.dark
-                            ? Icons.light_mode
-                            : Icons.dark_mode),
-                      ),
+                      Row(
+                        children: [
+                          DropdownButton<String>(
+                            value: selectedPort,
+                            hint: const Text("Select Port"),
+                            items: availablePorts
+                                .map((p) =>
+                                    DropdownMenuItem(value: p, child: Text(p)))
+                                .toList(),
+                            onChanged: (val) {
+                              if (val != null)
+                                setState(() => selectedPort = val);
+                            },
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            tooltip: "Toggle theme",
+                            onPressed: widget.onToggleTheme,
+                            icon: Icon(widget.mode == ThemeMode.dark
+                                ? Icons.light_mode
+                                : Icons.dark_mode),
+                          ),
+                        ],
+                      )
                     ],
                   ),
+
                   const SizedBox(height: 12),
-                  // Current selection status indicator
                   if (semanticAndHardwareValid)
                     Container(
-                      margin: const EdgeInsets.only(top: 10),
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: Colors.green.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(4),
-                        border: Border.all(color: Colors.green),
-                      ),
+                          color: Colors.green.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(color: Colors.green)),
                       child: const Row(
                         children: [
                           Icon(Icons.check_circle, color: Colors.green),
                           SizedBox(width: 8),
-                          Text("Configuration Semantically Verified",
+                          Text("Configuration Verified",
                               style: TextStyle(
                                   color: Colors.green,
                                   fontWeight: FontWeight.bold)),
                         ],
                       ),
                     ),
+
                   const SizedBox(height: 12),
+                  // Sensor Selection
                   Card(
-                    elevation: 2,
                     child: Padding(
                       padding: const EdgeInsets.all(12),
                       child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            "Select Sensors",
-                            style: TextStyle(
-                                fontSize: 18, fontWeight: FontWeight.bold),
-                          ),
-                          const SizedBox(height: 8),
-                          DropdownButtonFormField<String>(
-                            value: selectedBoard,
-                            decoration:
-                                const InputDecoration(labelText: "Board"),
-                            items: boards
-                                .map((b) =>
-                                    DropdownMenuItem(value: b, child: Text(b)))
-                                .toList(),
-                            onChanged: (val) {
-                              if (val != null) {
-                                setState(() => selectedBoard = val);
-                              }
-                            },
-                          ),
-                          const SizedBox(height: 12),
-                          ...availableSensors.map((s) {
-                            final type = s["type"] as String;
-                            final requiresPin = s["requires_pin"] == true;
-                            return Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                CheckboxListTile(
-                                  title: Text(type),
-                                  value: selected[type] ?? false,
-                                  onChanged: (val) => setState(
-                                      () => selected[type] = val ?? false),
-                                ),
-                                if (requiresPin)
-                                  Padding(
-                                    padding: const EdgeInsets.only(
-                                        left: 16, right: 16),
-                                    child: TextField(
-                                      controller: pinControllers[type],
-                                      keyboardType: TextInputType.number,
-                                      decoration: const InputDecoration(
-                                        labelText: "Pin",
-                                        hintText: "e.g., 4",
-                                      ),
-                                    ),
+                        children: availableSensors.map((s) {
+                          final type = s["type"] as String;
+                          final requiresPin = s["requires_pin"] == true;
+                          return Column(
+                            children: [
+                              CheckboxListTile(
+                                title: Text(type),
+                                value: selected[type] ?? false,
+                                onChanged: (val) => setState(
+                                    () => selected[type] = val ?? false),
+                              ),
+                              if (requiresPin)
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 16),
+                                  child: TextField(
+                                    controller: pinControllers[type],
+                                    keyboardType: TextInputType.number,
+                                    decoration: const InputDecoration(
+                                        labelText: "Pin", hintText: "e.g., 4"),
                                   ),
-                                const Divider(),
-                              ],
-                            );
-                          }),
-                        ],
+                                ),
+                            ],
+                          );
+                        }).toList(),
                       ),
                     ),
                   ),
+
                   const SizedBox(height: 12),
-                  Card(
-                    elevation: 2,
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            "Actions",
-                            style: TextStyle(
-                                fontSize: 18, fontWeight: FontWeight.bold),
-                          ),
-                          const SizedBox(height: 8),
-                          ElevatedButton(
-                            onPressed: isLoading ? null : _generateCode,
-                            style: ElevatedButton.styleFrom(
-                              minimumSize: const Size.fromHeight(48),
-                            ),
-                            child: isLoading
-                                ? const SizedBox(
-                                    width: 20,
-                                    height: 20,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2),
-                                  )
-                                : const Text("Generate ESP Code"),
-                          ),
-                        ],
+                  // Actions: Generate & Upload
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed: isLoading ? null : _generateCode,
+                          child: Text(
+                              isLoading ? "Generating..." : "Generate Code"),
+                        ),
                       ),
-                    ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: (isUploading || generatedCode == null)
+                              ? null
+                              : _uploadCode,
+                          icon: isUploading
+                              ? const SizedBox(
+                                  width: 12,
+                                  height: 12,
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2))
+                              : const Icon(Icons.upload),
+                          label: Text(
+                              isUploading ? "Uploading..." : "Direct Flash"),
+                          style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.blueAccent.shade700,
+                              foregroundColor: Colors.white),
+                        ),
+                      ),
+                    ],
                   ),
+
                   if (semanticErrors.isNotEmpty) ...[
                     const SizedBox(height: 12),
                     Card(
-                      color: Colors.amber.shade50,
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              "Semantic Warnings",
-                              style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.amber.shade900),
-                            ),
-                            const SizedBox(height: 8),
-                            ...semanticErrors.map((e) => Text("• $e")),
-                          ],
-                        ),
-                      ),
-                    ),
+                        color: Colors.amber.shade50,
+                        child: Padding(
+                            padding: const EdgeInsets.all(8),
+                            child: Text(
+                                "Semantic Warnings:\n${semanticErrors.join('\n')}"))),
                   ],
+
+                  const SizedBox(height: 12),
+                  // Console
+                  ConsoleWidget(
+                      logs: consoleLogs, scrollController: consoleScroll),
+
                   const SizedBox(height: 20),
                   _chartsSection(context),
                 ],
@@ -691,4 +863,69 @@ class _Series {
   final String name;
   final List<FlSpot> data;
   final Color color;
+}
+
+class LogEntry {
+  final String message;
+  final String category; // 'log', 'error', 'success', 'upload'
+  final DateTime timestamp;
+
+  LogEntry(
+      {required this.message, required this.category, required this.timestamp});
+}
+
+class ConsoleWidget extends StatelessWidget {
+  final List<LogEntry> logs;
+  final ScrollController scrollController;
+
+  const ConsoleWidget(
+      {super.key, required this.logs, required this.scrollController});
+
+  @override
+  Widget build(BuildContext context) {
+    // Auto-scroll to bottom
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (scrollController.hasClients) {
+        scrollController.jumpTo(scrollController.position.maxScrollExtent);
+      }
+    });
+
+    return Container(
+      height: 200,
+      width: double.infinity,
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade800),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("Output Console",
+              style: TextStyle(color: Colors.white54, fontSize: 12)),
+          const Divider(color: Colors.white24, height: 4),
+          Expanded(
+            child: ListView.builder(
+              controller: scrollController,
+              itemCount: logs.length,
+              itemBuilder: (context, index) {
+                final log = logs[index];
+                Color color = Colors.greenAccent;
+                if (log.category == 'error') color = Colors.redAccent;
+                if (log.category == 'upload') color = Colors.blueAccent;
+                if (log.category == 'success') color = Colors.green;
+
+                return Text(
+                  "[${log.timestamp.hour}:${log.timestamp.minute}:${log.timestamp.second}] ${log.message}",
+                  style: TextStyle(
+                      color: color, fontFamily: 'monospace', fontSize: 12),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
