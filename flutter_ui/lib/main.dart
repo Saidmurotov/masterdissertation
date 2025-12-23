@@ -215,7 +215,7 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
 
     final sensorPayload = selectedTypes.map((sType) {
       final meta = availableSensors.firstWhere((m) => m["type"] == sType);
-      final payload = {"type": sType};
+      final Map<String, dynamic> payload = {"type": sType};
       if (meta["requires_pin"] == true) {
         final txt = pinControllers[sType]?.text ?? "";
         final pin = int.tryParse(txt);
