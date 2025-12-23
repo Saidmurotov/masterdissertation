@@ -5,3 +5,8 @@ numpy
 matplotlib
 pyserial
 nidaqmx
+jinja2
+paho-mqtt
+pytest
+ruff
+black

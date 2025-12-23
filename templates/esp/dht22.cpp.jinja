@@ -1,0 +1,19 @@
+#include <DHT.h>
+
+#define DHTPIN {{ pin }}
+#define DHTTYPE DHT22
+
+DHT dht(DHTPIN, DHTTYPE);
+
+void init_dht() {
+  dht.begin();
+}
+
+float read_temp() {
+  return dht.readTemperature();
+}
+
+float read_humidity() {
+  return dht.readHumidity();
+}
+
