@@ -1,3 +1,53 @@
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+
+TEMPLATE_ROOT = Path(__file__).parent / "templates" / "esp"
+
+# Single source of truth for sensor metadata.
+# Add new sensors here and provide a template path under templates/esp/.
+SENSOR_CATALOG: Dict[str, Dict[str, Any]] = {
+    "DHT22": {
+        "protocol": "GPIO",
+        "default_pin": 4,
+        "sampling_rate_hz": 1,
+        "mqtt_topic": "daq/esp32_01/sensors",
+        "template_file": TEMPLATE_ROOT / "dht22.cpp.jinja",
+        "mcu_support": ["ESP32", "ESP8266"],
+        "requires_pin": True,
+    },
+    "BMP280": {
+        "protocol": "I2C",
+        "default_pin": None,
+        "sampling_rate_hz": 1,
+        "mqtt_topic": "daq/esp32_01/sensors",
+        "template_file": TEMPLATE_ROOT / "bmp280.cpp.jinja",
+        "mcu_support": ["ESP32", "ESP8266"],
+        "requires_pin": False,
+    },
+    "MQ135": {
+        "protocol": "Analog",
+        "default_pin": 34,
+        "sampling_rate_hz": 1,
+        "mqtt_topic": "daq/esp32_01/sensors",
+        "template_file": TEMPLATE_ROOT / "mq135.cpp.jinja",
+        "mcu_support": ["ESP32", "ESP8266"],
+        "requires_pin": True,
+        "pin_capability": "ADC",
+    },
+    "LDR": {
+        "protocol": "Analog",
+        "default_pin": 34,
+        "sampling_rate_hz": 1,
+        "mqtt_topic": "daq/esp32_01/sensors",
+        "template_file": TEMPLATE_ROOT / "ldr.cpp.jinja",
+        "mcu_support": ["ESP32", "ESP8266"],
+        "requires_pin": True,
+        "pin_capability": "ADC",
+    },
+}
+
+
 class DAQConfig:
     def __init__(self, sample_rate, channels, output_file, rtos_task_priority=None, rtos_stack_size=None, rtos_tick_rate=None, allocated_resources=None):
         self.sample_rate = sample_rate

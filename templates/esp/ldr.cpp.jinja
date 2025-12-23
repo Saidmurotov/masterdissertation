@@ -1,0 +1,15 @@
+#include <Arduino.h>
+
+// Simple analog read for LDR (Photoresistor)
+// Adjust scaling or smoothing as needed.
+
+const int LDR_PIN = {{ pin }};
+
+void init_ldr() {
+  pinMode(LDR_PIN, INPUT);
+}
+
+int read_ldr() {
+  return analogRead(LDR_PIN);
+}
+
