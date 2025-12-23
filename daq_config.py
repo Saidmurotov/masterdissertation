@@ -2,7 +2,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-TEMPLATE_ROOT = Path(__file__).parent / "templates"
+import sys
+import os
+
+def get_resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return Path(base_path) / relative_path
+
+TEMPLATE_ROOT = get_resource_path("templates")
 
 # Board catalog for pin capabilities and template roots
 BOARD_CATALOG: Dict[str, Dict[str, Any]] = {

@@ -6,7 +6,30 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
-void main() {
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
+import 'package:window_manager/window_manager.dart';
+import 'services/backend_manager.dart';
+import 'screens/splash_screen.dart';
+import 'utils/branding.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await windowManager.ensureInitialized();
+
+  WindowOptions windowOptions = const WindowOptions(
+    size: Size(1024, 768),
+    center: true,
+    backgroundColor: Colors.transparent,
+    skipTaskbar: false,
+    titleBarStyle: TitleBarStyle.normal,
+  );
+
+  windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await windowManager.show();
+    await windowManager.focus();
+  });
+
   runApp(const MyApp());
 }
 
@@ -17,8 +40,27 @@ class MyApp extends StatefulWidget {
   State<MyApp> createState() => _MyAppState();
 }
 
-class _MyAppState extends State<MyApp> {
+class _MyAppState extends State<MyApp> with WindowListener {
   ThemeMode mode = ThemeMode.dark;
+  bool showSplash = true;
+
+  @override
+  void initState() {
+    super.initState();
+    windowManager.addListener(this);
+  }
+
+  @override
+  void dispose() {
+    windowManager.removeListener(this);
+    super.dispose();
+  }
+
+  @override
+  void onWindowClose() {
+    BackendManager.stop();
+    super.onWindowClose();
+  }
 
   void _toggleTheme() {
     setState(() {
@@ -26,10 +68,15 @@ class _MyAppState extends State<MyApp> {
     });
   }
 
+  void _onSplashReady() {
+    setState(() => showSplash = false);
+  }
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'DAQ Sensor Dashboard',
+      title: Branding.appTitle,
+      debugShowCheckedModeBanner: false,
       themeMode: mode,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blueGrey),
@@ -42,13 +89,16 @@ class _MyAppState extends State<MyApp> {
         ),
         useMaterial3: true,
       ),
-      home: SensorSelectionPage(onToggleTheme: _toggleTheme, mode: mode),
+      home: showSplash
+          ? SplashScreen(onReady: _onSplashReady)
+          : SensorSelectionPage(onToggleTheme: _toggleTheme, mode: mode),
     );
   }
 }
 
 class SensorSelectionPage extends StatefulWidget {
-  const SensorSelectionPage({super.key, required this.onToggleTheme, required this.mode});
+  const SensorSelectionPage(
+      {super.key, required this.onToggleTheme, required this.mode});
 
   final VoidCallback onToggleTheme;
   final ThemeMode mode;
@@ -68,6 +118,7 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
   String? generatedCode;
   List<String> semanticErrors = [];
   WebSocketChannel? channel;
+  bool semanticAndHardwareValid = false;
 
   // Live data buffers
   final List<FlSpot> tempSeries = [];
@@ -95,7 +146,8 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
   }
 
   void _connectStream() {
-    channel = WebSocketChannel.connect(Uri.parse("ws://127.0.0.1:8000/ws/data"));
+    channel =
+        WebSocketChannel.connect(Uri.parse("ws://127.0.0.1:8000/ws/data"));
     channel!.stream.listen((event) {
       try {
         final data = jsonDecode(event);
@@ -197,6 +249,7 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
         setState(() {
           generatedCode = data["code"] as String?;
           semanticErrors = [];
+          semanticAndHardwareValid = true;
         });
         if (generatedCode != null) {
           _showCodeDialog(generatedCode!);
@@ -218,7 +271,10 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
           ? (data["detail"]["semantic_errors"] as List?)?.cast<String>()
           : null;
       if (errors != null && errors.isNotEmpty) {
-        setState(() => semanticErrors = errors);
+        setState(() {
+          semanticErrors = errors;
+          semanticAndHardwareValid = false;
+        });
         _showSemanticDialog(errors);
         return;
       }
@@ -256,6 +312,26 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  Future<void> _saveCode() async {
+    if (generatedCode == null) return;
+    String? outputFile = await FilePicker.platform.saveFile(
+      dialogTitle: 'Save Generated Code',
+      fileName: 'daq_system.ino',
+      type: FileType.custom,
+      allowedExtensions: ['ino', 'cpp', 'txt'],
+    );
+
+    if (outputFile != null) {
+      try {
+        final file = File(outputFile);
+        await file.writeAsString(generatedCode!);
+        _showSnack("File saved successfully to $outputFile");
+      } catch (e) {
+        _showSnack("Failed to save file: $e");
+      }
+    }
+  }
+
   void _showCodeDialog(String code) {
     showDialog(
       context: context,
@@ -269,6 +345,11 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
             ),
           ),
           actions: [
+            TextButton.icon(
+              icon: const Icon(Icons.save),
+              label: const Text("Save to File"),
+              onPressed: _saveCode,
+            ),
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
               child: const Text("Close"),
@@ -282,7 +363,61 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Sensor Selection")),
+      appBar: AppBar(title: const Text(Branding.appTitle)),
+      drawer: Drawer(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: [
+            UserAccountsDrawerHeader(
+              accountName: const Text("Sulaymon Saidmurotov"),
+              accountEmail: const Text("Master's Dissertation Project"),
+              currentAccountPicture: CircleAvatar(
+                backgroundColor: Colors.white,
+                child: Text("SS",
+                    style: TextStyle(fontSize: 24, color: Colors.blueGrey)),
+              ),
+              decoration: BoxDecoration(color: Colors.blueGrey),
+            ),
+            ListTile(
+              title: const Text("About Dissertation"),
+              leading: const Icon(Icons.info_outline),
+              onTap: () {
+                showDialog(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                          title: const Text("About"),
+                          content: const SingleChildScrollView(
+                              child: Text(Branding.dissertationDescription)),
+                          actions: [
+                            TextButton(
+                                onPressed: () => Navigator.pop(ctx),
+                                child: const Text("Close"))
+                          ],
+                        ));
+              },
+            ),
+          ],
+        ),
+      ),
+      bottomNavigationBar: BottomAppBar(
+        height: 40,
+        color: semanticErrors.isNotEmpty
+            ? Colors.red.shade900
+            : Colors.blueGrey.shade900,
+        child: Row(
+          children: [
+            Icon(semanticErrors.isNotEmpty ? Icons.warning : Icons.check,
+                color: Colors.white, size: 16),
+            const SizedBox(width: 8),
+            Text(
+              semanticErrors.isNotEmpty
+                  ? "Critical: Hardware Conflict Detected"
+                  : "System Ready - Semantic Engine Active",
+              style: const TextStyle(color: Colors.white, fontSize: 12),
+            ),
+          ],
+        ),
+      ),
       body: sensorsLoading
           ? const Center(child: CircularProgressIndicator())
           : SingleChildScrollView(
@@ -295,7 +430,8 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
                     children: [
                       const Text(
                         "DAQ Control & Monitoring",
-                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                        style: TextStyle(
+                            fontSize: 20, fontWeight: FontWeight.bold),
                       ),
                       IconButton(
                         tooltip: "Toggle theme",
@@ -307,6 +443,28 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
                     ],
                   ),
                   const SizedBox(height: 12),
+                  // Current selection status indicator
+                  if (semanticAndHardwareValid)
+                    Container(
+                      margin: const EdgeInsets.only(top: 10),
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.green.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: Colors.green),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.check_circle, color: Colors.green),
+                          SizedBox(width: 8),
+                          Text("Configuration Semantically Verified",
+                              style: TextStyle(
+                                  color: Colors.green,
+                                  fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 12),
                   Card(
                     elevation: 2,
                     child: Padding(
@@ -316,13 +474,14 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
                         children: [
                           const Text(
                             "Select Sensors",
-                            style:
-                                TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                            style: TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.bold),
                           ),
                           const SizedBox(height: 8),
                           DropdownButtonFormField<String>(
                             value: selectedBoard,
-                            decoration: const InputDecoration(labelText: "Board"),
+                            decoration:
+                                const InputDecoration(labelText: "Board"),
                             items: boards
                                 .map((b) =>
                                     DropdownMenuItem(value: b, child: Text(b)))
@@ -343,12 +502,13 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
                                 CheckboxListTile(
                                   title: Text(type),
                                   value: selected[type] ?? false,
-                                  onChanged: (val) =>
-                                      setState(() => selected[type] = val ?? false),
+                                  onChanged: (val) => setState(
+                                      () => selected[type] = val ?? false),
                                 ),
                                 if (requiresPin)
                                   Padding(
-                                    padding: const EdgeInsets.only(left: 16, right: 16),
+                                    padding: const EdgeInsets.only(
+                                        left: 16, right: 16),
                                     child: TextField(
                                       controller: pinControllers[type],
                                       keyboardType: TextInputType.number,
@@ -376,8 +536,8 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
                         children: [
                           const Text(
                             "Actions",
-                            style:
-                                TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                            style: TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.bold),
                           ),
                           const SizedBox(height: 8),
                           ElevatedButton(
@@ -389,7 +549,8 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
                                 ? const SizedBox(
                                     width: 20,
                                     height: 20,
-                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2),
                                   )
                                 : const Text("Generate ESP Code"),
                           ),
@@ -451,7 +612,8 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
             _chartCard(
               title: "Pressure",
               series: [
-                _Series(name: "Pressure", data: pressureSeries, color: Colors.cyan),
+                _Series(
+                    name: "Pressure", data: pressureSeries, color: Colors.cyan),
               ],
             ),
             _chartCard(
@@ -478,7 +640,9 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              Text(title,
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
               Expanded(
                 child: LineChart(
@@ -486,10 +650,15 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
                     backgroundColor: Colors.transparent,
                     gridData: const FlGridData(show: true),
                     titlesData: const FlTitlesData(
-                      bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                      leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 38)),
-                      rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                      topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      bottomTitles:
+                          AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      leftTitles: AxisTitles(
+                          sideTitles:
+                              SideTitles(showTitles: true, reservedSize: 38)),
+                      rightTitles:
+                          AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      topTitles:
+                          AxisTitles(sideTitles: SideTitles(showTitles: false)),
                     ),
                     lineBarsData: series
                         .map(
@@ -523,4 +692,3 @@ class _Series {
   final List<FlSpot> data;
   final Color color;
 }
-
