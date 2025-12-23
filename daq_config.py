@@ -2,18 +2,39 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-TEMPLATE_ROOT = Path(__file__).parent / "templates" / "esp"
+TEMPLATE_ROOT = Path(__file__).parent / "templates"
+
+# Board catalog for pin capabilities and template roots
+BOARD_CATALOG: Dict[str, Dict[str, Any]] = {
+    "ESP32": {
+        "adc_pins": {32, 33, 34, 35, 36, 39},
+        "templates_root": TEMPLATE_ROOT / "esp",
+    },
+    "ESP8266": {
+        "adc_pins": {0},  # A0
+        "templates_root": TEMPLATE_ROOT / "esp",
+    },
+    "Arduino Uno": {
+        # Arduino analog pins A0-A5 (mapped to 14-19 in many cores)
+        "adc_pins": {14, 15, 16, 17, 18, 19},
+        "templates_root": TEMPLATE_ROOT / "arduino",
+    },
+}
+
 
 # Single source of truth for sensor metadata.
-# Add new sensors here and provide a template path under templates/esp/.
 SENSOR_CATALOG: Dict[str, Dict[str, Any]] = {
     "DHT22": {
         "protocol": "GPIO",
         "default_pin": 4,
         "sampling_rate_hz": 1,
         "mqtt_topic": "daq/esp32_01/sensors",
-        "template_file": TEMPLATE_ROOT / "dht22.cpp.jinja",
-        "mcu_support": ["ESP32", "ESP8266"],
+        "templates": {
+            "ESP32": TEMPLATE_ROOT / "esp" / "dht22.cpp.jinja",
+            "ESP8266": TEMPLATE_ROOT / "esp" / "dht22.cpp.jinja",
+            "Arduino Uno": TEMPLATE_ROOT / "arduino" / "dht22.cpp.jinja",
+        },
+        "mcu_support": ["ESP32", "ESP8266", "Arduino Uno"],
         "requires_pin": True,
     },
     "BMP280": {
@@ -21,8 +42,12 @@ SENSOR_CATALOG: Dict[str, Dict[str, Any]] = {
         "default_pin": None,
         "sampling_rate_hz": 1,
         "mqtt_topic": "daq/esp32_01/sensors",
-        "template_file": TEMPLATE_ROOT / "bmp280.cpp.jinja",
-        "mcu_support": ["ESP32", "ESP8266"],
+        "templates": {
+            "ESP32": TEMPLATE_ROOT / "esp" / "bmp280.cpp.jinja",
+            "ESP8266": TEMPLATE_ROOT / "esp" / "bmp280.cpp.jinja",
+            "Arduino Uno": TEMPLATE_ROOT / "arduino" / "bmp280.cpp.jinja",
+        },
+        "mcu_support": ["ESP32", "ESP8266", "Arduino Uno"],
         "requires_pin": False,
     },
     "MQ135": {
@@ -30,8 +55,12 @@ SENSOR_CATALOG: Dict[str, Dict[str, Any]] = {
         "default_pin": 34,
         "sampling_rate_hz": 1,
         "mqtt_topic": "daq/esp32_01/sensors",
-        "template_file": TEMPLATE_ROOT / "mq135.cpp.jinja",
-        "mcu_support": ["ESP32", "ESP8266"],
+        "templates": {
+            "ESP32": TEMPLATE_ROOT / "esp" / "mq135.cpp.jinja",
+            "ESP8266": TEMPLATE_ROOT / "esp" / "mq135.cpp.jinja",
+            "Arduino Uno": TEMPLATE_ROOT / "arduino" / "mq135.cpp.jinja",
+        },
+        "mcu_support": ["ESP32", "ESP8266", "Arduino Uno"],
         "requires_pin": True,
         "pin_capability": "ADC",
     },
@@ -40,8 +69,12 @@ SENSOR_CATALOG: Dict[str, Dict[str, Any]] = {
         "default_pin": 34,
         "sampling_rate_hz": 1,
         "mqtt_topic": "daq/esp32_01/sensors",
-        "template_file": TEMPLATE_ROOT / "ldr.cpp.jinja",
-        "mcu_support": ["ESP32", "ESP8266"],
+        "templates": {
+            "ESP32": TEMPLATE_ROOT / "esp" / "ldr.cpp.jinja",
+            "ESP8266": TEMPLATE_ROOT / "esp" / "ldr.cpp.jinja",
+            "Arduino Uno": TEMPLATE_ROOT / "arduino" / "ldr.cpp.jinja",
+        },
+        "mcu_support": ["ESP32", "ESP8266", "Arduino Uno"],
         "requires_pin": True,
         "pin_capability": "ADC",
     },

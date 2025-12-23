@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Protocol
 import paho.mqtt.client as mqtt
 from jinja2 import Template
 
-from daq_config import SENSOR_CATALOG
+from daq_config import BOARD_CATALOG, SENSOR_CATALOG
 
 # MQTT defaults (can still be overridden per sensor via SENSOR_CATALOG if needed)
 MQTT_BROKER = "localhost"
@@ -45,22 +45,24 @@ class TemplateSensorStrategy:
         return template.render(**sensor_cfg)
 
 
-def build_strategy_registry() -> Dict[str, SensorStrategy]:
+def build_strategy_registry(board: str) -> Dict[str, SensorStrategy]:
     registry: Dict[str, SensorStrategy] = {}
     for sensor_type, meta in SENSOR_CATALOG.items():
-        template_path = Path(meta["template_file"])
-        registry[sensor_type] = TemplateSensorStrategy(template_path)
+        templates = meta.get("templates", {})
+        template_path = templates.get(board)
+        if not template_path:
+            continue
+        registry[sensor_type] = TemplateSensorStrategy(Path(template_path))
     return registry
 
 
-STRATEGIES = build_strategy_registry()
-
-
 def generate_code(user_config: Dict[str, Any]) -> str:
-    """Generate ESP C++ code based on user sensor selection."""
+    """Generate board-specific C++ code based on user sensor selection."""
     final_code_parts: List[str] = []
     sensors = user_config.get("sensors", [])
-    mcu = user_config.get("mcu", "ESP32")
+    board = user_config.get("board", "ESP32")
+
+    strategies = build_strategy_registry(board)
 
     for sensor in sensors:
         s_type = sensor["type"]
@@ -70,12 +72,12 @@ def generate_code(user_config: Dict[str, Any]) -> str:
             raise UnsupportedSensorError(f"Sensor {s_type} not supported.")
 
         meta = SENSOR_CATALOG[s_type]
-        if mcu not in meta["mcu_support"]:
-            raise IncompatibleMCUError(f"{s_type} not compatible with {mcu}")
+        if board not in meta["mcu_support"]:
+            raise IncompatibleMCUError(f"{s_type} not compatible with {board}")
 
-        strategy = STRATEGIES.get(s_type)
+        strategy = strategies.get(s_type)
         if not strategy:
-            raise UnsupportedSensorError(f"No strategy registered for {s_type}")
+            raise UnsupportedSensorError(f"No strategy registered for {s_type} on {board}")
 
         render_cfg = {"pin": pin or meta.get("default_pin")}
         final_code_parts.append(strategy.render(render_cfg))

@@ -1,27 +1,57 @@
 import 'dart:convert';
+import 'dart:math';
 
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 void main() {
   runApp(const MyApp());
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  ThemeMode mode = ThemeMode.dark;
+
+  void _toggleTheme() {
+    setState(() {
+      mode = mode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'DAQ Sensor Dashboard',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      home: const SensorSelectionPage(),
+      themeMode: mode,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blueGrey),
+        useMaterial3: true,
+      ),
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.blueGrey,
+          brightness: Brightness.dark,
+        ),
+        useMaterial3: true,
+      ),
+      home: SensorSelectionPage(onToggleTheme: _toggleTheme, mode: mode),
     );
   }
 }
 
 class SensorSelectionPage extends StatefulWidget {
-  const SensorSelectionPage({super.key});
+  const SensorSelectionPage({super.key, required this.onToggleTheme, required this.mode});
+
+  final VoidCallback onToggleTheme;
+  final ThemeMode mode;
 
   @override
   State<SensorSelectionPage> createState() => _SensorSelectionPageState();
@@ -31,15 +61,28 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
   List<Map<String, dynamic>> availableSensors = [];
   final Map<String, bool> selected = {};
   final Map<String, TextEditingController> pinControllers = {};
+  final List<String> boards = const ["ESP32", "ESP8266", "Arduino Uno"];
+  String selectedBoard = "ESP32";
   bool isLoading = false;
   bool sensorsLoading = true;
   String? generatedCode;
   List<String> semanticErrors = [];
+  WebSocketChannel? channel;
+
+  // Live data buffers
+  final List<FlSpot> tempSeries = [];
+  final List<FlSpot> humSeries = [];
+  final List<FlSpot> pressureSeries = [];
+  final List<FlSpot> gasSeries = [];
+  final List<FlSpot> lightSeries = [];
+  double tick = 0;
+  static const int maxPoints = 50;
 
   @override
   void initState() {
     super.initState();
     _loadSensors();
+    _connectStream();
   }
 
   @override
@@ -47,7 +90,41 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
     for (final c in pinControllers.values) {
       c.dispose();
     }
+    channel?.sink.close();
     super.dispose();
+  }
+
+  void _connectStream() {
+    channel = WebSocketChannel.connect(Uri.parse("ws://127.0.0.1:8000/ws/data"));
+    channel!.stream.listen((event) {
+      try {
+        final data = jsonDecode(event);
+        _ingestData(data);
+      } catch (_) {
+        // ignore parse errors
+      }
+    }, onError: (e) {
+      _showSnack("Stream error: $e");
+    });
+  }
+
+  void _ingestData(Map<String, dynamic> data) {
+    setState(() {
+      tick += 1;
+      void addPoint(List<FlSpot> series, num? v) {
+        if (v == null) return;
+        series.add(FlSpot(tick, v.toDouble()));
+        if (series.length > maxPoints) {
+          series.removeAt(0);
+        }
+      }
+
+      addPoint(tempSeries, data["temperature"]);
+      addPoint(humSeries, data["humidity"]);
+      addPoint(pressureSeries, data["pressure"]);
+      addPoint(gasSeries, data["gas"]);
+      addPoint(lightSeries, data["light"]);
+    });
   }
 
   Future<void> _loadSensors() async {
@@ -104,7 +181,8 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
         uri,
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
-          "mcu": "ESP32",
+          "mcu": selectedBoard,
+          "board": selectedBoard,
           "sensors": sensorPayload,
           // placeholders for logic checks; wire real values when available
           "mqtt_enabled": true,
@@ -212,6 +290,23 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        "DAQ Control & Monitoring",
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                      ),
+                      IconButton(
+                        tooltip: "Toggle theme",
+                        onPressed: widget.onToggleTheme,
+                        icon: Icon(widget.mode == ThemeMode.dark
+                            ? Icons.light_mode
+                            : Icons.dark_mode),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
                   Card(
                     elevation: 2,
                     child: Padding(
@@ -225,6 +320,20 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
                                 TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                           ),
                           const SizedBox(height: 8),
+                          DropdownButtonFormField<String>(
+                            value: selectedBoard,
+                            decoration: const InputDecoration(labelText: "Board"),
+                            items: boards
+                                .map((b) =>
+                                    DropdownMenuItem(value: b, child: Text(b)))
+                                .toList(),
+                            onChanged: (val) {
+                              if (val != null) {
+                                setState(() => selectedBoard = val);
+                              }
+                            },
+                          ),
+                          const SizedBox(height: 12),
                           ...availableSensors.map((s) {
                             final type = s["type"] as String;
                             final requiresPin = s["requires_pin"] == true;
@@ -312,14 +421,106 @@ class _SensorSelectionPageState extends State<SensorSelectionPage> {
                     ),
                   ],
                   const SizedBox(height: 20),
-                  const Text(
-                    "Real-Time Data Visualization Placeholder",
-                    style: TextStyle(fontSize: 16),
-                  ),
+                  _chartsSection(context),
                 ],
               ),
             ),
     );
   }
+
+  Widget _chartsSection(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          "Live Telemetry",
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            _chartCard(
+              title: "Temperature / Humidity",
+              series: [
+                _Series(name: "Temp", data: tempSeries, color: Colors.orange),
+                _Series(name: "Humidity", data: humSeries, color: Colors.blue),
+              ],
+            ),
+            _chartCard(
+              title: "Pressure",
+              series: [
+                _Series(name: "Pressure", data: pressureSeries, color: Colors.cyan),
+              ],
+            ),
+            _chartCard(
+              title: "Air Quality / Light",
+              series: [
+                _Series(name: "Gas", data: gasSeries, color: Colors.green),
+                _Series(name: "Light", data: lightSeries, color: Colors.yellow),
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _chartCard({required String title, required List<_Series> series}) {
+    return SizedBox(
+      width: 380,
+      height: 260,
+      child: Card(
+        elevation: 2,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Expanded(
+                child: LineChart(
+                  LineChartData(
+                    backgroundColor: Colors.transparent,
+                    gridData: const FlGridData(show: true),
+                    titlesData: const FlTitlesData(
+                      bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 38)),
+                      rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    ),
+                    lineBarsData: series
+                        .map(
+                          (s) => LineChartBarData(
+                            spots: s.data,
+                            isCurved: true,
+                            color: s.color,
+                            barWidth: 2,
+                            dotData: const FlDotData(show: false),
+                          ),
+                        )
+                        .toList(),
+                    borderData: FlBorderData(
+                      show: true,
+                      border: Border.all(color: Colors.grey.withOpacity(0.3)),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Series {
+  _Series({required this.name, required this.data, required this.color});
+  final String name;
+  final List<FlSpot> data;
+  final Color color;
 }
 

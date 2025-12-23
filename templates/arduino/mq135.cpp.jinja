@@ -1,0 +1,12 @@
+#include <MQ135.h>
+
+MQ135 mq135({{ pin }});
+
+void init_mq() {
+  // Sensor initialization if needed
+}
+
+float read_gas() {
+  return mq135.readGas();
+}
+

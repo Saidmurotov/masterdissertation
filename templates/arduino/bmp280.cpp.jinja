@@ -1,0 +1,12 @@
+#include <Adafruit_BMP280.h>
+
+Adafruit_BMP280 bmp;
+
+void init_bmp() {
+  bmp.begin();
+}
+
+float read_pressure() {
+  return bmp.readPressure();
+}
+

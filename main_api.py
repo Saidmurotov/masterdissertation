@@ -1,8 +1,11 @@
 """Lightweight FastAPI wrapper around esp_mqtt_generator."""
 
+import asyncio
+import json
+import random
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import HTTPException, FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -17,6 +20,7 @@ class SensorSelection(BaseModel):
 
 class GenerateRequest(BaseModel):
     mcu: str = Field("ESP32", description="Target MCU")
+    board: str = Field("ESP32", description="Target board")
     sensors: List[SensorSelection]
     mqtt_enabled: bool = True
     wifi_ssid: str | None = None
@@ -49,14 +53,15 @@ def generate_code(req: GenerateRequest):
     if not req.sensors:
         raise HTTPException(status_code=400, detail="At least one sensor is required.")
 
-    semantic_errors = analyze(req.dict())
+    semantic_errors = analyze(req.model_dump())
     if semantic_errors:
         raise HTTPException(status_code=400, detail={"semantic_errors": semantic_errors})
 
     try:
         payload = {
             "mcu": req.mcu,
-            "sensors": [s.dict() for s in req.sensors],
+            "board": req.board,
+            "sensors": [s.model_dump() for s in req.sensors],
             "mqtt_enabled": req.mqtt_enabled,
             "wifi_ssid": req.wifi_ssid,
             "wifi_password": req.wifi_password,
@@ -70,4 +75,23 @@ def generate_code(req: GenerateRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:  # pragma: no cover - unexpected
         raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
+
+
+@app.websocket("/ws/data")
+async def websocket_data(ws: WebSocket):
+    await ws.accept()
+    counter = 0
+    while True:
+        counter += 1
+        # Simulate realistic sensor readings
+        payload = {
+            "temperature": round(random.uniform(20.0, 30.0), 2),
+            "humidity": round(random.uniform(40.0, 70.0), 2),
+            "pressure": round(random.uniform(990.0, 1020.0), 2),
+            "gas": round(random.uniform(200.0, 450.0), 2),
+            "light": random.randint(100, 900),
+            "ts": counter,
+        }
+        await ws.send_text(json.dumps(payload))
+        await asyncio.sleep(2)
 

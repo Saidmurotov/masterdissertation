@@ -8,10 +8,7 @@ Checks:
 
 from typing import Any, Dict, List
 
-from daq_config import SENSOR_CATALOG
-
-# For ESP32, ADC-capable GPIOs typically include 32-39 (input only).
-ADC_PINS = {32, 33, 34, 35, 36, 39}
+from daq_config import BOARD_CATALOG, SENSOR_CATALOG
 
 
 def analyze(config: Dict[str, Any]) -> List[str]:
@@ -21,6 +18,14 @@ def analyze(config: Dict[str, Any]) -> List[str]:
     wifi_ssid = config.get("wifi_ssid", "")
     wifi_password = config.get("wifi_password", "")
     mqtt_broker = config.get("mqtt_broker", "")
+    board = config.get("board", "ESP32")
+
+    board_meta = BOARD_CATALOG.get(board)
+    if not board_meta:
+        errors.append(f"Unsupported board: {board}")
+        return errors
+
+    adc_pins = set(board_meta.get("adc_pins", []))
 
     # Pin conflict and capability checks
     used_pins = {}
@@ -49,9 +54,9 @@ def analyze(config: Dict[str, Any]) -> List[str]:
             else:
                 used_pins[pin] = s_type
 
-            if pin_capability == "ADC" and pin not in ADC_PINS:
+            if pin_capability == "ADC" and pin not in adc_pins:
                 errors.append(
-                    f"Pin {pin} is not ADC-capable; required for analog sensor {s_type}."
+                    f"Pin {pin} is not ADC-capable for board {board}; required for analog sensor {s_type}."
                 )
 
     # Logic checks for MQTT/WiFi when enabled
